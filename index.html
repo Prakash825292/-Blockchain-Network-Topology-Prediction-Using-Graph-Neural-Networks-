@@ -1,0 +1,426 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Project 14: Blockchain Network Topology Prediction (Demo)</title>
+  <style>
+    :root {
+      --bg:#f6fbff; --card:#ffffff; --accent:#2b6cb0; --muted:#6b7280;
+      font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+    }
+    body { margin:0; background:var(--bg); color:#111; }
+    header { padding:18px 28px; border-bottom:1px solid #e6eef9; background:linear-gradient(90deg,#f7fbff, #f0f6ff); }
+    h1 { margin:0; color:var(--accent); font-size:20px; }
+    .container { display:grid; grid-template-columns:360px 1fr; gap:18px; padding:20px; max-width:1200px; margin:18px auto; }
+    .card { background:var(--card); border-radius:10px; padding:16px; box-shadow:0 6px 18px rgba(45,66,100,0.06); }
+    .section-title { color:var(--accent); font-weight:600; margin-bottom:8px; }
+    label { display:block; margin:8px 0 6px; color:var(--muted); font-size:13px; }
+    input[type=file] { display:block; }
+    button { background:var(--accent); color:white; padding:8px 12px; border-radius:8px; border:0; cursor:pointer; font-weight:600; }
+    button.secondary { background:transparent; color:var(--accent); border:1px solid #dbeefe; }
+    .small { font-size:13px; color:var(--muted); }
+    #canvasWrap { height:520px; display:flex; align-items:center; justify-content:center; background:linear-gradient(180deg,#ffffff,#f7fbff); border-radius:10px; overflow:hidden; }
+    canvas { background:transparent; display:block; max-width:100%; height:auto; }
+    .controls { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
+    table { width:100%; border-collapse:collapse; margin-top:10px; font-size:13px; }
+    th,td { padding:8px; border-bottom:1px solid #f0f3f8; text-align:left; }
+    .metrics { display:flex; gap:8px; margin-top:10px; flex-wrap:wrap; }
+    .metric { background:#f7fbff; padding:8px; border-radius:8px; color:var(--accent); font-weight:700; }
+    footer { max-width:1200px; margin:8px auto 40px; color:var(--muted); font-size:13px; text-align:center }
+    hr { border:0; border-top:1px solid #eef6fd; margin:12px 0; }
+    select, input[type=number] { padding:6px 8px; border-radius:6px; border:1px solid #e6eef9; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Project 14: Blockchain Network Topology Prediction Using Graph Neural Networks</h1>
+    <div class="small">Demo: Simulated GCN-style link prediction in a blockchain network</div>
+  </header>
+
+  <main class="container">
+    <!-- Sidebar -->
+    <aside class="card">
+      <div class="section-title">Inputs</div>
+      <label>Upload graph JSON (.json with nodes + edges):</label>
+      <input id="fileInput" type="file" accept=".json" />
+      <div class="controls">
+        <button id="genSmall">Generate small (8)</button>
+        <button id="genMedium">Generate medium (16)</button>
+        <button id="genLarge">Generate large (28)</button>
+      </div>
+
+      <hr>
+      <div class="section-title">Predict</div>
+      <select id="modeSelect">
+        <option value="prob">Probability-based</option>
+        <option value="heuristic">Heuristic</option>
+      </select>
+      <div class="small" style="margin-top:8px">
+        Top <input id="topK" type="number" value="6" style="width:60px" /> predictions
+      </div>
+      <div class="controls">
+        <button id="predictBtn">Run Prediction</button>
+        <button id="resetBtn" class="secondary">Reset</button>
+      </div>
+
+      <hr>
+      <div class="section-title">Export</div>
+      <div class="controls">
+        <button id="downloadJSON">Download JSON</button>
+        <button id="downloadCSV" class="secondary">Download CSV</button>
+      </div>
+    </aside>
+
+    <!-- Main Content -->
+    <section>
+      <div class="card">
+        <div class="section-title">Network Visualization</div>
+        <div id="canvasWrap"><canvas id="netCanvas" width="900" height="520"></canvas></div>
+        <div class="controls" style="justify-content:flex-end">
+          <button id="toggleLabels">Toggle Labels</button>
+          <button id="simulateStep" class="secondary">Simulate Time Step</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="section-title">Results</div>
+        <div class="metrics">
+          <div class="metric" id="m_newEdges">New edges: 0</div>
+          <div class="metric" id="m_estAcc">Estimated (simulated) accuracy: -</div>
+          <div class="metric" id="m_auc">Estimated (simulated) AUC: -</div>
+        </div>
+
+        <table>
+          <thead><tr><th>#</th><th>From</th><th>To</th><th>Score</th></tr></thead>
+          <tbody id="predTable"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <footer class="small">Demo frontend for GNN-style blockchain topology prediction. Predictions are simulated for demo purposes.</footer>
+
+  <script>
+    // ---------- Data / state ----------
+    let graph = { nodes: [], edges: [] };
+    let predicted = [];
+    let showLabels = true;
+
+    const canvas = document.getElementById('netCanvas');
+    const ctx = canvas.getContext('2d');
+    const predTableBody = document.getElementById('predTable');
+
+    // Handle device pixel ratio for crisp canvas
+    function fixCanvasDPR() {
+      const ratio = window.devicePixelRatio || 1;
+      const cssW = canvas.clientWidth || canvas.width;
+      const cssH = canvas.clientHeight || canvas.height;
+      canvas.width = Math.round(cssW * ratio);
+      canvas.height = Math.round(cssH * ratio);
+      canvas.style.width = cssW + "px";
+      canvas.style.height = cssH + "px";
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    }
+    fixCanvasDPR();
+    window.addEventListener('resize', () => {
+      // keep nodes positions consistent but update canvas resolution
+      fixCanvasDPR();
+      draw();
+    });
+
+    // ---------- Utility ----------
+    function clearGraph() {
+      graph = { nodes: [], edges: [] };
+      predicted = [];
+      updateMetrics();
+      draw();
+    }
+
+    function nodeExists(id) {
+      return graph.nodes.some(n => n.id === id);
+    }
+
+    function addEdge(a, b) {
+      if (!a || !b || a === b) return false; // disallow self-loop
+      const exists = graph.edges.some(e => (e.from === a && e.to === b) || (e.from === b && e.to === a));
+      if (!exists) {
+        graph.edges.push({ from: a, to: b });
+        return true;
+      }
+      return false;
+    }
+
+    function computeDegrees() {
+      graph.nodes.forEach(n => n.deg = 0);
+      graph.edges.forEach(e => {
+        const na = graph.nodes.find(n => n.id === e.from);
+        const nb = graph.nodes.find(n => n.id === e.to);
+        if (na) na.deg++;
+        if (nb) nb.deg++;
+      });
+    }
+
+    // Ensure a node has coordinates; if not, place randomly inside canvas with padding
+    function ensureNodeCoordinates(node) {
+      const padding = 20;
+      if (typeof node.x !== 'number' || typeof node.y !== 'number' || isNaN(node.x) || isNaN(node.y)) {
+        const w = canvas.width / (window.devicePixelRatio || 1);
+        const h = canvas.height / (window.devicePixelRatio || 1);
+        node.x = Math.random() * (w - padding * 2) + padding;
+        node.y = Math.random() * (h - padding * 2) + padding;
+      }
+      if (typeof node.deg !== 'number') node.deg = 0;
+    }
+
+    // ---------- Drawing ----------
+    function draw() {
+      // Clear
+      const w = canvas.width / (window.devicePixelRatio || 1);
+      const h = canvas.height / (window.devicePixelRatio || 1);
+      ctx.clearRect(0, 0, w, h);
+      ctx.lineWidth = 2;
+
+      // Draw edges (existing)
+      graph.edges.forEach(e => {
+        const a = graph.nodes.find(n => n.id === e.from);
+        const b = graph.nodes.find(n => n.id === e.to);
+        if (!a || !b) return;
+        ctx.strokeStyle = '#1f78b4';
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+      });
+
+      // Predicted edges (dashed)
+      ctx.setLineDash([5, 5]);
+      predicted.forEach(e => {
+        const a = graph.nodes.find(n => n.id === e.from);
+        const b = graph.nodes.find(n => n.id === e.to);
+        if (!a || !b) return;
+        ctx.strokeStyle = '#2ca02c';
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+      });
+      ctx.setLineDash([]);
+
+      // Draw nodes
+      graph.nodes.forEach(n => {
+        ctx.beginPath();
+        ctx.fillStyle = '#ff7f0e';
+        const r = 6 + Math.log(1 + (n.deg || 0));
+        ctx.arc(n.x, n.y, r, 0, Math.PI * 2);
+        ctx.fill();
+
+        if (showLabels) {
+          ctx.fillStyle = '#222';
+          ctx.font = '12px sans-serif';
+          ctx.fillText(n.id, n.x + 8, n.y + 4);
+        }
+      });
+    }
+
+    // ---------- Graph generation / import ----------
+    function generateRandomGraph(n) {
+      clearGraph();
+      const w = canvas.width / (window.devicePixelRatio || 1);
+      const h = canvas.height / (window.devicePixelRatio || 1);
+      for (let i = 0; i < n; i++) {
+        graph.nodes.push({ id: 'N' + (i + 1), x: Math.random() * (w - 40) + 20, y: Math.random() * (h - 40) + 20, deg: 0 });
+      }
+      // add random edges
+      for (let i = 0; i < n; i++) {
+        let m = Math.floor(Math.random() * 3) + 1; // 1..3
+        for (let k = 0; k < m; k++) {
+          let j = Math.floor(Math.random() * n);
+          if (j !== i) addEdge(graph.nodes[i].id, graph.nodes[j].id);
+        }
+      }
+      computeDegrees();
+      draw();
+    }
+
+    // ---------- Prediction (simulated) ----------
+    function runPrediction(mode = 'prob', topK = 6) {
+      predicted = [];
+      if (!graph.nodes.length) {
+        alert('Graph is empty — generate or upload a graph first.');
+        return;
+      }
+
+      // build simple deterministic-ish embeddings from node id (for demo)
+      const emb = {};
+      graph.nodes.forEach(n => {
+        // create a simple seed from id
+        let seed = 0;
+        for (let i = 0; i < n.id.length; i++) seed = (seed * 31 + n.id.charCodeAt(i)) | 0;
+        // pseudo-random fraction (deterministic)
+        const rnd = Math.abs(Math.sin(seed)) * 0.9999; // 0..~1
+        emb[n.id] = [((seed % 13) + 13) % 13 / 13 + (rnd * 0.2), (((seed * 7) % 11) + 11) % 11 / 11 + (rnd * 0.3)];
+      });
+
+      const pairs = [];
+      for (let i = 0; i < graph.nodes.length; i++) {
+        for (let j = i + 1; j < graph.nodes.length; j++) {
+          const a = graph.nodes[i].id, b = graph.nodes[j].id;
+          // skip existing edges
+          if (graph.edges.find(e => (e.from === a && e.to === b) || (e.from === b && e.to === a))) continue;
+          const da = graph.nodes[i].deg || 0;
+          const db = graph.nodes[j].deg || 0;
+          let score = 0;
+          if (mode === 'prob') {
+            score = (emb[a][0] * emb[b][0]) + (emb[a][1] * emb[b][1]) + 0.05 * (da + db);
+          } else {
+            score = (da + db) + (emb[a][0] * emb[b][0]) * 0.2;
+          }
+          pairs.push({ from: a, to: b, score: +score.toFixed(4) });
+        }
+      }
+
+      pairs.sort((x, y) => y.score - x.score);
+      const k = Math.max(0, Math.min(pairs.length, parseInt(topK) || 6));
+      predicted = pairs.slice(0, k);
+      updateResults();
+    }
+
+    function updateResults() {
+      predTableBody.innerHTML = '';
+      predicted.forEach((p, i) => {
+        const row = document.createElement('tr');
+        row.innerHTML = `<td>${i + 1}</td><td>${p.from}</td><td>${p.to}</td><td>${p.score}</td>`;
+        predTableBody.appendChild(row);
+      });
+      document.getElementById('m_newEdges').textContent = `New edges: ${predicted.length}`;
+      document.getElementById('m_estAcc').textContent = `Estimated (simulated) accuracy: ${(0.6 + predicted.length * 0.02).toFixed(2)}`;
+      document.getElementById('m_auc').textContent = `Estimated (simulated) AUC: ${(0.62 + predicted.length * 0.025).toFixed(2)}`;
+      draw();
+    }
+
+    function updateMetrics() {
+      document.getElementById('m_newEdges').textContent = 'New edges: 0';
+      document.getElementById('m_estAcc').textContent = 'Estimated (simulated) accuracy: -';
+      document.getElementById('m_auc').textContent = 'Estimated (simulated) AUC: -';
+    }
+
+    // ---------- File import / export ----------
+    document.getElementById('fileInput').onchange = (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        try {
+          const data = JSON.parse(ev.target.result);
+          if (data.nodes && data.edges) {
+            // Normalize nodes: ensure id and coordinates and deg
+            graph.nodes = data.nodes.map(n => {
+              const node = Object.assign({}, n);
+              if (!node.id && node.name) node.id = node.name; // try fallback
+              if (!node.id) node.id = 'N' + (Math.random().toString(36).substr(2, 6));
+              ensureNodeCoordinates(node);
+              return node;
+            });
+            // Normalize edges: ensure from/to exist and exclude self loops/dupes
+            graph.edges = [];
+            (data.edges || []).forEach(e2 => {
+              if (!e2) return;
+              const from = e2.from || e2.u || e2.source;
+              const to = e2.to || e2.v || e2.target;
+              if (!from || !to) return;
+              if (from === to) return;
+              if (!nodeExists(from) || !nodeExists(to)) return;
+              addEdge(from, to);
+            });
+            computeDegrees();
+            predicted = [];
+            updateMetrics();
+            draw();
+          } else {
+            alert("Invalid graph JSON structure. Expected object with 'nodes' and 'edges' arrays.");
+          }
+        } catch (err) {
+          console.error(err);
+          alert("Error parsing JSON file.");
+        }
+      };
+      reader.readAsText(file);
+      // reset input so same file can be uploaded again if needed
+      e.target.value = '';
+    };
+
+    function safeDownload(filename, blob) {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => {
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }, 100);
+    }
+
+    document.getElementById('downloadJSON').onclick = () => {
+      const exportObj = {
+        nodes: graph.nodes.map(n => ({ id: n.id, x: n.x, y: n.y, deg: n.deg })),
+        edges: graph.edges.slice(),
+        predicted: predicted.slice()
+      };
+      const blob = new Blob([JSON.stringify(exportObj, null, 2)], { type: 'application/json' });
+      safeDownload('predicted_topology.json', blob);
+    };
+
+    document.getElementById('downloadCSV').onclick = () => {
+      let csv = 'from,to,score,is_predicted\n';
+      graph.edges.forEach(e => csv += `${e.from},${e.to},,false\n`);
+      predicted.forEach(p => csv += `${p.from},${p.to},${p.score},true\n`);
+      const blob = new Blob([csv], { type: 'text/csv' });
+      safeDownload('edges.csv', blob);
+    };
+
+    // ---------- Buttons / interactions ----------
+    document.getElementById('genSmall').onclick = () => generateRandomGraph(8);
+    document.getElementById('genMedium').onclick = () => generateRandomGraph(16);
+    document.getElementById('genLarge').onclick = () => generateRandomGraph(28);
+
+    document.getElementById('predictBtn').onclick = () => {
+      const mode = document.getElementById('modeSelect').value;
+      const topK = parseInt(document.getElementById('topK').value) || 6;
+      runPrediction(mode, topK);
+    };
+
+    document.getElementById('resetBtn').onclick = () => {
+      predicted = [];
+      predTableBody.innerHTML = '';
+      updateMetrics();
+      draw();
+    };
+
+    document.getElementById('toggleLabels').onclick = () => {
+      showLabels = !showLabels;
+      draw();
+    };
+
+    document.getElementById('simulateStep').onclick = () => {
+      // Add predicted edges safely (collect then add)
+      const added = [];
+      predicted.forEach(p => {
+        if (addEdge(p.from, p.to)) added.push(p);
+      });
+      if (added.length) {
+        computeDegrees();
+      }
+      predicted = [];
+      predTableBody.innerHTML = '';
+      updateMetrics();
+      draw();
+    };
+
+    // ---------- Default graph on load ----------
+    generateRandomGraph(12);
+  </script>
+</body>
+</html>
